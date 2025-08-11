@@ -92,25 +92,15 @@ function M.setup(_server)
 		end
 
 		if bindings.accept and bindings.accept ~= "" then
-			vim.keymap.set("i", bindings.accept, M.accept, { silent = true, expr = true, script = true, nowait = true })
+			vim.keymap.set("i", bindings.accept, M.accept, { silent = true, nowait = true })
 		end
 
 		if bindings.accept_word and bindings.accept_word ~= "" then
-			vim.keymap.set(
-				"i",
-				bindings.accept_word,
-				M.accept_next_word,
-				{ silent = true, expr = true, script = true, nowait = true }
-			)
+			vim.keymap.set("i", bindings.accept_word, M.accept_next_word, { silent = true, nowait = true })
 		end
 
 		if bindings.accept_line and bindings.accept_line ~= "" then
-			vim.keymap.set(
-				"i",
-				bindings.accept_line,
-				M.accept_next_line,
-				{ silent = true, expr = true, script = true, nowait = true }
-			)
+			vim.keymap.set("i", bindings.accept_line, M.accept_next_line, { silent = true, nowait = true })
 		end
 	end
 
@@ -136,6 +126,31 @@ function M.get_completion_text()
 	return completion_text or ""
 end
 
+function M.completion_accept()
+	local completion_offset = M.completion_offset
+	local completion_text = M.completion_text
+	M.completion_text = nil
+	M.completion_offset = nil
+	vim.print("completion_text: " .. completion_text)
+	completion_text = string.sub(completion_text, completion_offset + 1)
+	vim.print("completion_text: " .. completion_text)
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local line, col = cursor[1] - 1, cursor[2] + 1
+	vim.print("line: " .. line .. " col: " .. col .. " completion_offset: " .. completion_offset)
+	local suggestions = vim.split(completion_text, "\n", { plain = true })
+
+	vim.schedule_wrap(function()
+		vim.api.nvim_buf_set_text(0, line, col, line, col, suggestions)
+		local new_col = vim.fn.strcharlen(suggestions[#suggestions])
+		-- For single-line suggestions, adjust the column position by adding the
+		-- current column offset
+		if #suggestions == 1 then
+			new_col = new_col + col
+		end
+		vim.api.nvim_win_set_cursor(0, { line + #suggestions, new_col })
+	end)()
+end
+
 local function completion_inserter(current_completion, insert_text)
 	local default = config.options.virtual_text.accept_fallback or (vim.fn.pumvisible() == 1 and "<C-N>" or "\t")
 
@@ -159,21 +174,26 @@ local function completion_inserter(current_completion, insert_text)
 		return default
 	end
 
-	local delete_range = ""
-	if end_offset - start_offset > 0 then
-		local delete_bytes = end_offset - start_offset
-		local delete_chars = vim.fn.strchars(vim.fn.strpart(vim.fn.getline("."), 0, delete_bytes))
-		delete_range = ' <Esc>"_x0"_d' .. delete_chars .. "li"
-	end
+	local completion_offset = end_offset - start_offset
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local line, col = cursor[1] - 1, cursor[2]
 
-	local insert_text = '<C-R><C-O>=v:lua.require("codeium.virtual_text").get_completion_text()<CR>'
-	M.completion_text = text
-
-	local cursor_text = delta == 0 and "" or '<C-O>:exe "go" line2byte(line("."))+col(".")+(' .. delta .. ")<CR>"
+	text = string.sub(text, col + 1)
+	local suggestions = vim.split(text, "\n", { plain = true })
 
 	server:accept_completion(current_completion.completion.completionId)
 
-	return '<C-g>u' .. delete_range .. insert_text .. cursor_text
+	vim.schedule_wrap(function()
+		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-g>u", true, true, true), "i", false)
+		vim.api.nvim_buf_set_text(0, line, col, line, completion_offset, suggestions)
+		local new_col = vim.fn.strcharlen(suggestions[#suggestions])
+		-- For single-line suggestions, adjust the column position by adding the
+		-- current column offset
+		if #suggestions == 1 then
+			new_col = new_col + completion_offset
+		end
+		vim.api.nvim_win_set_cursor(0, { line + #suggestions, new_col })
+	end)()
 end
 
 function M.accept()
