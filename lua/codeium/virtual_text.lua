@@ -126,29 +126,28 @@ function M.get_completion_text()
 	return completion_text or ""
 end
 
-function M.completion_accept()
-	local completion_offset = M.completion_offset
-	local completion_text = M.completion_text
-	M.completion_text = nil
-	M.completion_offset = nil
-	vim.print("completion_text: " .. completion_text)
-	completion_text = string.sub(completion_text, completion_offset + 1)
-	vim.print("completion_text: " .. completion_text)
+local function go_to_byte_offset(offset)
+	if not offset or offset == 0 then
+		return
+	end
 	local cursor = vim.api.nvim_win_get_cursor(0)
-	local line, col = cursor[1] - 1, cursor[2] + 1
-	vim.print("line: " .. line .. " col: " .. col .. " completion_offset: " .. completion_offset)
-	local suggestions = vim.split(completion_text, "\n", { plain = true })
+	local ln, col = cursor[1], cursor[2]
+	local byte_pos = vim.fn.line2byte(ln) + col + offset
+	vim.cmd("go " .. byte_pos)
+end
 
-	vim.schedule_wrap(function()
-		vim.api.nvim_buf_set_text(0, line, col, line, col, suggestions)
-		local new_col = vim.fn.strcharlen(suggestions[#suggestions])
-		-- For single-line suggestions, adjust the column position by adding the
-		-- current column offset
-		if #suggestions == 1 then
-			new_col = new_col + col
-		end
-		vim.api.nvim_win_set_cursor(0, { line + #suggestions, new_col })
-	end)()
+local function leading_spaces_to_tabs(str, tab_size)
+	local leading_spaces = str:match("^( *)")
+	if not leading_spaces then
+		return str
+	end
+
+	local tab_count = math.floor(#leading_spaces / tab_size)
+	local remaining_spaces = #leading_spaces % tab_size
+
+	local new_str = string.rep("\t", tab_count) .. string.rep(" ", remaining_spaces) .. str:sub(#leading_spaces + 1)
+	return new_str
+	--return str:gsub("    ", "\t")
 end
 
 local function completion_inserter(current_completion, insert_text)
@@ -178,21 +177,30 @@ local function completion_inserter(current_completion, insert_text)
 	local cursor = vim.api.nvim_win_get_cursor(0)
 	local line, col = cursor[1] - 1, cursor[2]
 
-	text = string.sub(text, col + 1)
 	local suggestions = vim.split(text, "\n", { plain = true })
+
+	local tab_opt = util.get_editor_options(0)
+	if not tab_opt.insert_spaces then
+		for i = 1, #suggestions do
+			suggestions[i] = leading_spaces_to_tabs(suggestions[i], tab_opt.tab_size)
+		end
+	end
+	suggestions[1] = string.sub(suggestions[1], col + 1)
 
 	server:accept_completion(current_completion.completion.completionId)
 
 	vim.schedule_wrap(function()
 		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-g>u", true, true, true), "i", false)
 		vim.api.nvim_buf_set_text(0, line, col, line, completion_offset, suggestions)
-		local new_col = vim.fn.strcharlen(suggestions[#suggestions])
+		--local new_col = vim.fn.strcharlen(suggestions[#suggestions])
+		local new_col = vim.fn.strlen(suggestions[#suggestions])
 		-- For single-line suggestions, adjust the column position by adding the
 		-- current column offset
 		if #suggestions == 1 then
 			new_col = new_col + completion_offset
 		end
 		vim.api.nvim_win_set_cursor(0, { line + #suggestions, new_col })
+		go_to_byte_offset(delta)
 	end)()
 end
 
