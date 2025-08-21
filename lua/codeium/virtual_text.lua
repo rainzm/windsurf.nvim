@@ -92,25 +92,15 @@ function M.setup(_server)
 		end
 
 		if bindings.accept and bindings.accept ~= "" then
-			vim.keymap.set("i", bindings.accept, M.accept, { silent = true, expr = true, script = true, nowait = true })
+			vim.keymap.set("i", bindings.accept, M.accept, { silent = true, nowait = true })
 		end
 
 		if bindings.accept_word and bindings.accept_word ~= "" then
-			vim.keymap.set(
-				"i",
-				bindings.accept_word,
-				M.accept_next_word,
-				{ silent = true, expr = true, script = true, nowait = true }
-			)
+			vim.keymap.set("i", bindings.accept_word, M.accept_next_word, { silent = true, nowait = true })
 		end
 
 		if bindings.accept_line and bindings.accept_line ~= "" then
-			vim.keymap.set(
-				"i",
-				bindings.accept_line,
-				M.accept_next_line,
-				{ silent = true, expr = true, script = true, nowait = true }
-			)
+			vim.keymap.set("i", bindings.accept_line, M.accept_next_line, { silent = true, nowait = true })
 		end
 	end
 
@@ -136,6 +126,30 @@ function M.get_completion_text()
 	return completion_text or ""
 end
 
+local function go_to_byte_offset(offset)
+	if not offset or offset == 0 then
+		return
+	end
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local ln, col = cursor[1], cursor[2]
+	local byte_pos = vim.fn.line2byte(ln) + col + offset
+	vim.cmd("go " .. byte_pos)
+end
+
+local function leading_spaces_to_tabs(str, tab_size)
+	local leading_spaces = str:match("^( *)")
+	if not leading_spaces then
+		return str
+	end
+
+	local tab_count = math.floor(#leading_spaces / tab_size)
+	local remaining_spaces = #leading_spaces % tab_size
+
+	local new_str = string.rep("\t", tab_count) .. string.rep(" ", remaining_spaces) .. str:sub(#leading_spaces + 1)
+	return new_str
+	--return str:gsub("    ", "\t")
+end
+
 local function completion_inserter(current_completion, insert_text)
 	local default = config.options.virtual_text.accept_fallback or (vim.fn.pumvisible() == 1 and "<C-N>" or "\t")
 
@@ -159,21 +173,35 @@ local function completion_inserter(current_completion, insert_text)
 		return default
 	end
 
-	local delete_range = ""
-	if end_offset - start_offset > 0 then
-		local delete_bytes = end_offset - start_offset
-		local delete_chars = vim.fn.strchars(vim.fn.strpart(vim.fn.getline("."), 0, delete_bytes))
-		delete_range = ' <Esc>"_x0"_d' .. delete_chars .. "li"
+	local completion_offset = end_offset - start_offset
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local line, col = cursor[1] - 1, cursor[2]
+
+	local suggestions = vim.split(text, "\n", { plain = true })
+
+	local tab_opt = util.get_editor_options(0)
+	if not tab_opt.insert_spaces then
+		for i = 1, #suggestions do
+			suggestions[i] = leading_spaces_to_tabs(suggestions[i], tab_opt.tab_size)
+		end
 	end
-
-	local insert_text = '<C-R><C-O>=v:lua.require("codeium.virtual_text").get_completion_text()<CR>'
-	M.completion_text = text
-
-	local cursor_text = delta == 0 and "" or '<C-O>:exe "go" line2byte(line("."))+col(".")+(' .. delta .. ")<CR>"
+	suggestions[1] = string.sub(suggestions[1], col + 1)
 
 	server:accept_completion(current_completion.completion.completionId)
 
-	return '<C-g>u' .. delete_range .. insert_text .. cursor_text
+	vim.schedule_wrap(function()
+		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-g>u", true, true, true), "i", false)
+		vim.api.nvim_buf_set_text(0, line, col, line, completion_offset, suggestions)
+		--local new_col = vim.fn.strcharlen(suggestions[#suggestions])
+		local new_col = vim.fn.strlen(suggestions[#suggestions])
+		-- For single-line suggestions, adjust the column position by adding the
+		-- current column offset
+		if #suggestions == 1 then
+			new_col = new_col + completion_offset
+		end
+		vim.api.nvim_win_set_cursor(0, { line + #suggestions, new_col })
+		go_to_byte_offset(delta)
+	end)()
 end
 
 function M.accept()
